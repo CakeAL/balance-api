@@ -12,6 +12,7 @@ pub struct Config {
 pub struct Server {
     pub addr: String,
     pub port: u16,
+    pub request_timeout: i64,
 }
 
 impl Config {

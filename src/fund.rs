@@ -1,8 +1,13 @@
+use std::time::Duration;
+
 use anyhow::{anyhow, Result};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::time::Instant;
 use uuid::Uuid;
+
+use crate::{config::Config, GLOBAL_CONFIG};
 
 #[derive(Serialize)]
 struct GetFundJson {
@@ -90,32 +95,39 @@ pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
 }
 
 pub async fn get_all_fund(uid: i64) -> Result<i64> {
+    let config = &*GLOBAL_CONFIG;
+    let timeout = Duration::from_millis(config.server.request_timeout as u64);
+
     let (mut pre, mut ans) = (500000i64, 0i64);
     let mut unique_id = Uuid::new_v4().to_string();
     while pre >= 1 {
-        match get_pay(uid, pre, unique_id.clone()).await {
-            Err(e) => {
-                if e.to_string().contains("Request failed with status code:") {
-                    continue;
-                } else {
-                    return Err(e);
+        match tokio::time::timeout(timeout, get_pay(uid, pre, unique_id.clone())).await {
+            Ok(res) => match res {
+                Err(e) => {
+                    if e.to_string().contains("Request failed with status code:") {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
                 }
-            }
-            Ok(code) => match code {
-                200 => {
-                    ans += pre;
-                    unique_id = Uuid::new_v4().to_string();
-                    continue;
-                }
-                501 => {
-                    pre /= 2;
-                    unique_id = Uuid::new_v4().to_string();
-                    continue;
-                }
-                _ => continue,
+                Ok(code) => match code {
+                    200 => {
+                        ans += pre;
+                        unique_id = Uuid::new_v4().to_string();
+                        continue;
+                    }
+                    501 => {
+                        pre /= 2;
+                        unique_id = Uuid::new_v4().to_string();
+                        continue;
+                    }
+                    _ => continue,
+                },
             },
+            Err(_) => continue, // timeout
         }
     }
+
     Ok(ans)
 }
 

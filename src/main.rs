@@ -1,12 +1,16 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::{net::SocketAddr, str::FromStr, sync::LazyLock};
 
 use axum::Router;
+use config::Config;
 use router::routers;
 
 mod config;
 mod handler;
 mod router;
 mod fund;
+
+// 出现错误直接 panic!
+static GLOBAL_CONFIG: LazyLock<Config> = LazyLock::new(|| Config::load_config());
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .compact()
     .init();
 
-    let config = config::Config::load_config(); // 出现错误直接 panic!
+    let config = &*GLOBAL_CONFIG;
 
     let app = Router::new().merge(routers());
 
