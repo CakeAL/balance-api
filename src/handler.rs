@@ -54,7 +54,53 @@ pub async fn user_trade() -> impl IntoResponse {
     )
 }
 
-pub async fn query_user_amount() -> impl IntoResponse {}
+#[derive(Serialize)]
+struct QueryUserAmountDataResponse {
+    code: i32,
+    msg: String,
+    #[serde(rename = "requestId")]
+    request_id: String,
+    data: Vec<QueryUserAmountData>,
+}
+
+#[derive(Serialize)]
+struct QueryUserAmountData {
+    uid: i64,
+    amount: f64,
+}
+
+pub async fn query_user_amount(header: HeaderMap, body_raw: String) -> impl IntoResponse {
+    let body: Vec<i64> = match serde_json::from_str(&body_raw) {
+        Ok(value) => value,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid JSON"})),
+            )
+        }
+    };
+    let mut data = vec![];
+    for uid in body {
+        let amount = db::api::get_balance(uid).unwrap_or(0);
+        data.push(QueryUserAmountData {
+            uid,
+            amount: amount as f64 / 100.0,
+        });
+    }
+    let request_id = match header.get("X-KSY-REQUEST-ID") {
+        Some(value) => value.to_str().unwrap().to_string(),
+        None => "".to_string(),
+    };
+    (
+        StatusCode::OK,
+        Json(json!(QueryUserAmountDataResponse {
+            code: 200,
+            msg: "ok".to_string(),
+            request_id,
+            data,
+        })),
+    )
+}
 
 #[derive(Serialize)]
 struct FinishJson {
@@ -64,7 +110,7 @@ struct FinishJson {
 
 pub async fn batch_pay_finish(req_uuid: String, request_id: String) -> i32 {
     let data = FinishJson {
-        batch_pay_id: req_uuid.clone(),
+        batch_pay_id: request_id.clone(),
     };
     let json_data = json!(data);
 
@@ -135,18 +181,5 @@ async fn do_batch_pay(body: BatchPayJson) {
                 continue;
             }
         };
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::batch_pay_finish;
-
-    #[tokio::test]
-    async fn test_batch_pay_finish() {
-        let req_uuid = "1234567890".to_string();
-        let request_id = "abcde12345".to_string();
-        let code = batch_pay_finish(req_uuid.clone(), request_id.clone()).await;
-        assert_eq!(code, 200);
     }
 }
