@@ -8,6 +8,7 @@ mod config;
 mod handler;
 mod router;
 mod fund;
+mod db;
 
 // 出现错误直接 panic!
 static GLOBAL_CONFIG: LazyLock<Config> = LazyLock::new(|| Config::load_config());
