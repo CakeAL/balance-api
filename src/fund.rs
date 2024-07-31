@@ -4,10 +4,9 @@ use anyhow::{anyhow, Result};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::{config::Config, GLOBAL_CONFIG};
+use crate::GLOBAL_CONFIG;
 
 #[derive(Serialize)]
 struct GetFundJson {
@@ -53,17 +52,14 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
     match status {
         StatusCode::OK => {}
         StatusCode::GATEWAY_TIMEOUT => {
-            return Err(anyhow!(format!(
-                "Request failed with status code: {}",
-                status
-            )))
+            return Err(anyhow!("Request failed with status code: {}", status))
         }
-        _ => return Err(anyhow!(format!("Error getting fund: {}", status))),
+        _ => return Err(anyhow!("Error getting fund: {}", status)),
     }
 
     let result: GetFundResponse = serde_json::from_str(&body)?;
     if result.request_id != uuid {
-        return Err(anyhow!(format!("Error getting fund: {} {}", status, body)));
+        return Err(anyhow!("Error getting fund: {} {}", status, body));
     }
 
     Ok(result.code)
@@ -82,6 +78,7 @@ pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
         .header("Content-Type", "application/json")
         .header("X-KSY-REQUEST-ID", "1")
         .header("X-KSY-KINGSTAR-ID", "20004")
+        .body(json_data.to_string())
         .send()
         .await?;
 
@@ -120,6 +117,9 @@ pub async fn get_all_fund(uid: i64) -> Result<i64> {
                         pre /= 2;
                         unique_id = Uuid::new_v4().to_string();
                         continue;
+                    }
+                    404 => {
+                        return Err(anyhow!("not found account by uid: {}", uid));
                     }
                     _ => continue,
                 },
