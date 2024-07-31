@@ -5,3 +5,7 @@
 转译了这个 Go 语言的版本：https://github.com/huiming23344/balanceAPI
 
 拿来练习，axum（Web框架） + tokio（异步框架），高并发。
+
+## TODO
+
+1. 从 `batch_pay` 到 `batch_pay_finish` 的计时方法
