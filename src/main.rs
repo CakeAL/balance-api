@@ -8,6 +8,7 @@ mod config;
 mod db;
 mod fund;
 mod handler;
+mod uuid_cache;
 mod router;
 
 // 出现错误直接 panic!

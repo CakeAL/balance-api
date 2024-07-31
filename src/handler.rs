@@ -11,7 +11,11 @@ use serde_json::json;
 use tokio::task;
 use uuid::Uuid;
 
-use crate::{db, fund::{get_all_fund, Fund}};
+use crate::{
+    db,
+    fund::{get_all_fund, Fund},
+    uuid_cache,
+};
 
 #[derive(Deserialize, Serialize)]
 pub struct BatchPayJson {
@@ -46,12 +50,22 @@ struct UserTradeJson {
 }
 
 pub async fn batch_pay(header: HeaderMap, Json(body): Json<BatchPayJson>) -> impl IntoResponse {
+    let batch_pay_id = body.batch_pay_id.to_owned();
+    if !uuid_cache::check_and_add_batch_pay(batch_pay_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "batchPayId already exist"})),
+        )
+            .into_response();
+    }
+
     // 开一个异步任务
     task::spawn(do_batch_pay(body));
     let request_id = match header.get("X-KSY-REQUEST-ID") {
         Some(value) => value.to_str().unwrap().to_string(),
         None => "".to_string(),
     };
+
     (
         StatusCode::OK,
         Json(json!({"msg": "ok", "code": 200, "requestId": request_id})),
@@ -61,6 +75,17 @@ pub async fn batch_pay(header: HeaderMap, Json(body): Json<BatchPayJson>) -> imp
 
 pub async fn user_trade(header: HeaderMap, body_raw: String) -> impl IntoResponse {
     // TODO: make sure each request_id will only do once
+    let request_id = match header.get("X-KSY-REQUEST-ID") {
+        Some(value) => value.to_str().unwrap().to_string(),
+        None => "".to_string(),
+    };
+    if !uuid_cache::check_and_add_trade(request_id.clone()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "requestId already exist"})),
+        )
+            .into_response();
+    }
     let body: UserTradeJson = match serde_json::from_str(&body_raw) {
         Ok(body) => body,
         Err(_) => {
@@ -70,6 +95,7 @@ pub async fn user_trade(header: HeaderMap, body_raw: String) -> impl IntoRespons
                     "error": "Invalid JSON"
                 })),
             )
+                .into_response();
         }
     };
 
@@ -81,18 +107,15 @@ pub async fn user_trade(header: HeaderMap, body_raw: String) -> impl IntoRespons
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": err.to_string()})),
-        );
+        )
+            .into_response();
     }
-
-    let request_id = match header.get("X-KSY-REQUEST-ID") {
-        Some(value) => value.to_str().unwrap().to_string(),
-        None => "".to_string(),
-    };
 
     (
         StatusCode::OK,
         Json(json!({"msg": "ok", "code": 200, "requestId": request_id})),
     )
+        .into_response()
 }
 
 pub async fn query_user_amount(header: HeaderMap, Json(body): Json<Vec<i64>>) -> impl IntoResponse {
@@ -203,22 +226,26 @@ mod tests {
 
     use crate::fund::{init_funds, Fund};
 
-    
     #[tokio::test]
     async fn test_batch_pay() {
-        let funds = vec![Fund{
-            uid: 100032,
-            amount: 88.91,
-        }, Fund {
-            uid: 100042,
-            amount: 10000.93,
-        }, Fund {
-            uid:    403131,
-			amount: 2345.35,
-        }, Fund {
-            uid:    100052,
-			amount: 88.93,
-        }];
+        let funds = vec![
+            Fund {
+                uid: 100001,
+                amount: 88.91,
+            },
+            Fund {
+                uid: 100042,
+                amount: 10000.93,
+            },
+            Fund {
+                uid: 403131,
+                amount: 2345.35,
+            },
+            Fund {
+                uid: 100052,
+                amount: 88.93,
+            },
+        ];
         let res = init_funds(funds).await;
         dbg!(res.unwrap());
     }

@@ -46,8 +46,8 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
     let body = response.text().await?;
 
     // 打印响应体
-    // println!("Response status code: {}", status);
-    // println!("Response body: {}", body);
+    println!("Response status code: {}", status);
+    println!("Response body: {}", body);
 
     match status {
         StatusCode::OK => {}
