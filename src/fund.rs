@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use uuid::Uuid;
 
 use crate::GLOBAL_CONFIG;
@@ -96,7 +96,7 @@ pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
 pub async fn get_all_fund(uid: i64) -> Result<i64> {
     let (mut pre, mut ans) = (500000i64, 0i64);
     println!("before get all one amount");
-    ans += get_all_one_amount(uid, 1000000, 100).await;
+    ans += get_all_one_amount(uid, 1000000, 500).await;
     while pre >= 1 {
         ans += get_all_one_amount(uid, pre, 2).await;
         pre /= 2;
@@ -128,8 +128,19 @@ async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
     let mut unique_id = Uuid::new_v4().to_string();
     let config = &*GLOBAL_CONFIG;
     let timeout = Duration::from_millis(config.server.request_timeout as u64);
+
+    // 并发限制
+    let semaphore = Arc::new(Semaphore::new(100));
+
     loop {
-        match tokio::time::timeout(timeout, get_pay(uid, amount, unique_id.clone())).await {
+        let semaphore_1 = semaphore.clone();
+        let unique_id_1 = unique_id.clone();
+        match tokio::time::timeout(timeout, async move {
+            let _premit = semaphore_1.acquire().await.unwrap();
+            println!("maxRequestParallel now have: {}", semaphore_1.available_permits());
+            get_pay(uid, amount, unique_id_1).await
+            // premit is dropped here, releasing it back to the semaphore
+        }).await {
             Ok(res) => match res {
                 Err(_) => {}
                 Ok(code) => match code {
@@ -138,18 +149,20 @@ async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
                         unique_id = Uuid::new_v4().to_string();
                         continue;
                     }
-                    501 => return ans,
+                    501 => {
+                        println!("maxRequestParallel now have: {}", semaphore.available_permits());
+                        return ans;
+                    }
                     404 => return 0,
                     _ => continue,
                 },
             },
             Err(_) => {
-                println!("timeout");
+                println!("maxRequestParallel now have: {}", semaphore.available_permits());
                 continue;
             }
         }
     }
-    0
 }
 
 #[cfg(test)]

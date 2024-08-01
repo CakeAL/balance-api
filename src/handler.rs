@@ -292,8 +292,31 @@ mod tests {
                 return;
             }
         };
-        let res = init_funds(funds).await;
-        dbg!(res.unwrap());
+        init_funds(funds.clone()).await.unwrap();
+        // pay all funds
+        let mut uids = vec![];
+        for f in funds {
+            uids.push(f.uid);
+        }
+        pay_funds_api(uids).await;
+    }
+
+    #[tokio::test]
+    async fn test_user_trade_big() {
+        let funds: Vec<Fund> = match File::open("testfile/initBigFund100.json") {
+            Ok(file) => serde_json::from_reader(file).unwrap(),
+            Err(err) => {
+                eprintln!("Error reading file: {}", err);
+                return;
+            }
+        }; 
+        init_funds(funds.clone()).await.unwrap();
+        // pay all funds
+        let mut uids = vec![];
+        for f in funds.clone() {
+            uids.push(f.uid);
+        }
+        pay_funds_api(uids).await;
     }
 
     #[tokio::test]
@@ -311,9 +334,9 @@ mod tests {
         for f in funds.clone() {
             uids.push(f.uid);
         }
-        time::sleep(Duration::from_secs(10)).await;
         pay_funds_api(uids).await;
         // transfer the funds
+        time::sleep(Duration::from_secs(10)).await;
         transfer_funds_to_one_account(funds).await;
         // get_fund_account(vec![100001]).await;
     }
