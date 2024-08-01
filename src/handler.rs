@@ -1,13 +1,10 @@
-use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::time::Duration;
 
 use awaitgroup::WaitGroup;
 use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Extension, Json,
+    Json,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -186,7 +183,7 @@ pub async fn batch_pay_finish(req_uuid: String, request_id: String) -> i32 {
 
 async fn do_batch_pay(body: BatchPayJson, time_start: tokio::time::Instant) {
     pay_funds(body.uids).await;
-    tracing::info!("pay_funds use time: {}", time_start.elapsed().as_secs_f64());
+    println!("pay_funds use time: {}", time_start.elapsed().as_secs_f64());
     // call batch_pay_finish when all user finish
     let uuid: String = Uuid::new_v4().to_string();
     loop {
@@ -198,7 +195,7 @@ async fn do_batch_pay(body: BatchPayJson, time_start: tokio::time::Instant) {
         {
             Ok(code) => {
                 if code == 200 {
-                    tracing::info!("use time: {}", time_start.elapsed().as_secs_f64());
+                    println!("use time: {}", time_start.elapsed().as_secs_f64());
                     return;
                 } else {
                     continue;
@@ -216,12 +213,12 @@ async fn pay_funds(uids: Vec<i64>) {
     let mut wg = WaitGroup::new();
     for uid in uids {
         let worker = wg.worker();
-        tokio::spawn(async move {
+        task::spawn(async move {
             let amount = get_all_fund(uid).await;
             if let Ok(amount) = amount {
                 // let start = Instant::now();
                 db::api::add_money(uid, amount);
-                // tracing::info!(
+                // println!(
                 //     "uid: {}, add money: {}, use time: {}ms",
                 //     uid,
                 //     amount,

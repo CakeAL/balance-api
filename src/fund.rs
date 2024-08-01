@@ -1,11 +1,17 @@
-use std::{sync::{atomic::{AtomicBool, AtomicI64, Ordering}, Arc}, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use awaitgroup::WaitGroup;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{sync::Semaphore, time};
+use tokio::{
+    sync::mpsc::{self, Sender},
+    task, time,
+};
 use uuid::Uuid;
 
 use crate::GLOBAL_CONFIG;
@@ -34,8 +40,8 @@ struct GetFundResponse {
 }
 
 // 不保证正确
-pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
-    tracing::info!("GETPAY uid: {uid}, amount: {amount}, uniqueID: {unique_id}");
+pub async fn get_pay(uid: i64, amount: i64, unique_id: String, tx: Sender<i32>) {
+    println!("GETPAY uid: {uid}, amount: {amount}, uniqueID: {unique_id}");
     let data = GetFundJson {
         transaction_id: unique_id,
         uid,
@@ -50,9 +56,21 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
         .header("X-KSY-KINGSTAR-ID", "20004")
         .body(json_data.to_string())
         .send()
-        .await?;
+        .await;
+
+    if let Err(e) = response {
+        tracing::error!("{}", e.to_string());
+        let _ = tx.send(0).await;
+        return;
+    }
+    let response = response.unwrap();
     let status = response.status();
-    let body = response.text().await?;
+    let body = response.text().await;
+    if let Err(e) = body {
+        tracing::error!("{}", e.to_string());
+        let _ = tx.send(0).await;
+        return;
+    }
 
     // 打印响应体
     // println!("Response status code: {}", status);
@@ -60,18 +78,32 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
 
     match status {
         StatusCode::OK => {}
-        StatusCode::GATEWAY_TIMEOUT => {
-            return Err(anyhow!("Request failed with status code: {}", status))
+        // StatusCode::GATEWAY_TIMEOUT => {
+        //     // return Err(anyhow!("Request failed with status code: {}", status))
+        //     tracing::error!("Request failed with status code: {}", status);
+        //     return;
+        // }
+        _ => {
+            // return Err(anyhow!("Error getting fund: {}", status))
+            let _ = tx.send(1).await;
+            return;
         }
-        _ => return Err(anyhow!("Error getting fund: {}", status)),
     }
 
-    let result: GetFundResponse = serde_json::from_str(&body)?;
+    let result = serde_json::from_str::<GetFundResponse>(&body.unwrap());
+    if let Err(e) = result {
+        tracing::error!("{}", e.to_string());
+        let _ = tx.send(0).await;
+        return;
+    }
+    let result = result.unwrap();
     if result.request_id != uuid {
-        return Err(anyhow!("Error getting fund: {} {}", status, body));
+        // return Err(anyhow!("Error getting fund: {} {}", status, body));
+        let _ = tx.send(1).await;
+        return;
     }
 
-    Ok(result.code)
+    let _ = tx.send(result.code).await;
 }
 
 pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
@@ -107,65 +139,59 @@ pub async fn get_all_fund(uid: i64) -> Result<i64> {
 }
 
 async fn get_all_one_amount(uid: i64, amount: i64, max_parallel: usize) -> i64 {
-    let ans = Arc::new(AtomicI64::new(0));
-    let is_done = Arc::new(AtomicBool::new(false));
+    let ans = Arc::new(Mutex::new(0));
+    let (tx_done, mut rx_done) = mpsc::channel(100);
     let mut wg = WaitGroup::new();
     for i in 1..=max_parallel {
-        if is_done.load(Ordering::Relaxed) { break; }
+        if let Ok(_) = rx_done.try_recv() {
+            break;
+        }
         if max_parallel > 2 {
             if i < 30 && i != 1 {
                 time::sleep(Duration::from_millis(10)).await;
             }
         }
         let ans = ans.clone();
-        let is_done = is_done.clone();
+        let tx_done = tx_done.clone();
         let worker = wg.worker();
-        tokio::spawn(async move {
-            ans.fetch_add(singal_get_pay(uid, amount).await, Ordering::SeqCst);
-            is_done.store(true, Ordering::SeqCst);
+        task::spawn(async move {
+            *ans.lock().unwrap() += singal_get_pay(uid, amount).await;
+            tx_done.send(true).await.unwrap();
             worker.done();
         });
     }
     wg.wait().await;
-    ans.load(Ordering::Relaxed)
+    *ans.to_owned().lock().unwrap()
 }
 
 async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
-    let mut ans = 0i64;
-    let mut unique_id = Uuid::new_v4().to_string();
     let config = &*GLOBAL_CONFIG;
     let timeout = Duration::from_millis(config.server.request_timeout as u64);
-
-    // 并发限制
-    let semaphore = Arc::new(Semaphore::new(100));
+    let mut ans = 0i64;
+    let mut unique_id = Uuid::new_v4().to_string();
 
     loop {
-        let semaphore_1 = semaphore.clone();
+        // 超时/或其他原因重试
+        let (tx, mut rx) = mpsc::channel(1);
+        let tx_clone = tx.clone();
         let unique_id_1 = unique_id.clone();
-        match tokio::time::timeout(timeout, async move {
-            let _premit = semaphore_1.acquire().await.unwrap();
-            println!("maxRequestParallel now have: {}", semaphore_1.available_permits());
-            get_pay(uid, amount, unique_id_1).await
-            // premit is dropped here, releasing it back to the semaphore
-        }).await {
-            Ok(res) => match res {
-                Err(_) => {}
-                Ok(code) => match code {
+        task::spawn(get_pay(uid, amount, unique_id_1, tx_clone));
+        let timeout = time::sleep(timeout);
+        tokio::select! {
+            Some(code) = rx.recv() => {
+                match code {
                     200 => {
                         ans += amount;
                         unique_id = Uuid::new_v4().to_string();
                         continue;
                     }
-                    501 => {
-                        println!("maxRequestParallel now have: {}", semaphore.available_permits());
-                        return ans;
-                    }
+                    501 => return ans,
                     404 => return 0,
                     _ => continue,
-                },
+                }
             },
-            Err(_) => {
-                println!("maxRequestParallel now have: {}", semaphore.available_permits());
+            _ = timeout => {
+                if let Some(_) = rx.recv().await {}
                 continue;
             }
         }
@@ -176,13 +202,13 @@ async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_get_pay() {
-        let uid = 600001i64;
-        let amount = 1i64;
-        let res = get_pay(uid, amount, "aaaaa".into()).await;
-        dbg!(res.unwrap());
-    }
+    // #[tokio::test]
+    // async fn test_get_pay() {
+    //     let uid = 600001i64;
+    //     let amount = 1i64;
+    //     let res = get_pay(uid, amount, "aaaaa".into()).await;
+    //     dbg!(res.unwrap());
+    // }
 
     #[tokio::test]
     async fn test_get_all_fund() {

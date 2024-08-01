@@ -1,4 +1,4 @@
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::Result;
 
@@ -10,17 +10,17 @@ pub trait Engine: Send + Sync {
     fn transfer(&self, from: i64, to: i64, amount: i64) -> Result<()>;
 }
 
-pub static MY_ENGINE: LazyLock<Arc<RwLock<dyn Engine>>> =
-    LazyLock::new(|| Arc::new(RwLock::new(MMap::new())));
+pub static MY_ENGINE: LazyLock<Arc<Mutex<dyn Engine>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(MMap::new())));
 
 pub fn add_money(uid: i64, amount: i64) {
-    MY_ENGINE.write().unwrap().add_money(uid, amount)
+    MY_ENGINE.lock().unwrap().add_money(uid, amount)
 }
 
 pub fn get_balance(uid: i64) -> Result<i64> {
-    MY_ENGINE.write().unwrap().get_balance(uid)
+    MY_ENGINE.lock().unwrap().get_balance(uid)
 }
 
 pub fn transfer(from: i64, to: i64, amount: i64) -> Result<()> {
-    MY_ENGINE.write().unwrap().transfer(from, to, amount)
+    MY_ENGINE.lock().unwrap().transfer(from, to, amount)
 }
