@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use dashmap::DashSet;
 
-struct UuidCache {
+pub struct UuidCache {
     batch_pay: DashSet<String>,
     trade: DashSet<String>,
 }

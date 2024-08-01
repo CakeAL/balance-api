@@ -46,8 +46,8 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
     let body = response.text().await?;
 
     // 打印响应体
-    println!("Response status code: {}", status);
-    println!("Response body: {}", body);
+    // println!("Response status code: {}", status);
+    // println!("Response body: {}", body);
 
     match status {
         StatusCode::OK => {}
@@ -65,7 +65,7 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
     Ok(result.code)
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub struct Fund {
     pub uid: i64,
     pub amount: f64,
@@ -120,6 +120,9 @@ pub async fn get_all_fund(uid: i64) -> Result<i64> {
                     }
                     404 => {
                         return Err(anyhow!("not found account by uid: {}", uid));
+                    }
+                    500001 => {
+                        return Err(anyhow!("get fund error, uid: {}, amount: {}", uid, pre));
                     }
                     _ => continue,
                 },

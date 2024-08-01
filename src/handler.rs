@@ -8,7 +8,7 @@ use axum::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::task;
+use tokio::{task, time::Instant};
 use uuid::Uuid;
 
 use crate::{
@@ -40,7 +40,7 @@ struct FinishJson {
     batch_pay_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct UserTradeJson {
     #[serde(rename = "sourceUid")]
     source_uid: i64,
@@ -102,7 +102,7 @@ pub async fn user_trade(header: HeaderMap, body_raw: String) -> impl IntoRespons
     if let Err(err) = db::api::transfer(
         body.source_uid,
         body.target_uid,
-        (body.amount * 100.0) as i64,
+        (body.amount * 100.0).round() as i64,
     ) {
         return (
             StatusCode::BAD_REQUEST,
@@ -178,23 +178,7 @@ pub async fn batch_pay_finish(req_uuid: String, request_id: String) -> i32 {
 }
 
 async fn do_batch_pay(body: BatchPayJson) {
-    // TODO: make sure a BatchPayId will only do once
-    let mut handlers = vec![];
-    for uid in body.uids {
-        let handle = tokio::spawn(async move {
-            let amount = get_all_fund(uid).await;
-            if let Ok(amount) = amount {
-                db::api::add_money(uid, amount);
-            }
-        });
-        handlers.push(handle);
-    }
-
-    for handle in handlers {
-        handle.await.unwrap(); // 等待全部完成
-    }
-    // println!("{:?}", db::api::get_all_balance());
-
+    pay_funds(body.uids).await;
     // call batch_pay_finish when all user finish
     let uuid: String = Uuid::new_v4().to_string();
     loop {
@@ -220,11 +204,43 @@ async fn do_batch_pay(body: BatchPayJson) {
     }
 }
 
+async fn pay_funds(uids: Vec<i64>) {
+    let mut handlers = vec![];
+    for uid in uids {
+        let handle = tokio::spawn(async move {
+            let amount = get_all_fund(uid).await;
+            if let Ok(amount) = amount {
+                let start = Instant::now();
+                db::api::add_money(uid, amount);
+                println!(
+                    "uid: {}, add money: {}, use time: {}ms",
+                    uid,
+                    amount,
+                    start.elapsed().as_millis()
+                )
+            }
+        });
+        handlers.push(handle);
+    }
+
+    for handle in handlers {
+        handle.await.unwrap(); // 等待全部完成
+    }
+    // println!("{:?}", db::api::get_all_balance());
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;
 
+    use reqwest::Client;
+    use serde_json::json;
+    use tokio::time::Instant;
+    use uuid::Uuid;
+
     use crate::fund::{init_funds, Fund};
+
+    use super::{BatchPayJson, UserTradeJson};
 
     #[tokio::test]
     async fn test_batch_pay() {
@@ -251,6 +267,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_batch_pay_once() {
+        let funds = vec![Fund {
+            uid: 100001,
+            amount: 36.73,
+        }];
+        init_funds(funds.clone()).await.unwrap();
+        let mut uids = vec![];
+        for f in funds {
+            uids.push(f.uid);
+        }
+        pay_funds_api(uids).await;
+    }
+
+    #[tokio::test]
     async fn test_batch_pay_from_file() {
         let funds: Vec<Fund> = match File::open("testfile/initFund100.json") {
             Ok(file) => serde_json::from_reader(file).unwrap(),
@@ -261,5 +291,95 @@ mod tests {
         };
         let res = init_funds(funds).await;
         dbg!(res.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_user_trade() {
+        let funds: Vec<Fund> = match File::open("testfile/initFund100.json") {
+            Ok(file) => serde_json::from_reader(file).unwrap(),
+            Err(err) => {
+                eprintln!("Error reading file: {}", err);
+                return;
+            }
+        };
+        init_funds(funds.clone()).await.unwrap();
+        // pay all funds
+        let mut uids = vec![];
+        for f in funds {
+            uids.push(f.uid);
+        }
+        pay_funds_api(uids).await;
+    }
+
+    async fn get_fund_account(uids: Vec<i64>) {
+        let unique_id = Uuid::new_v4().to_string();
+        let json_data = json!(uids);
+        let response = Client::new()
+            .post("http://127.0.0.1:20004/onePass/queryUserAmount")
+            .header("Content-Type", "application/json")
+            .header("X-KSY-REQUEST-ID", unique_id)
+            .body(json_data.to_string())
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        println!("Response status code: {}", status);
+        println!("Response body: {}", body);
+    }
+
+    async fn pay_funds_api(uids: Vec<i64>) {
+        let unique_id = Uuid::new_v4().to_string();
+        let data = BatchPayJson {
+            batch_pay_id: unique_id.clone(),
+            uids,
+        };
+        let json_data = json!(data);
+        let _response = Client::new()
+            .post("http://127.0.0.1:20004/onePass/batchPay")
+            .header("Content-Type", "application/json")
+            .header("X-KSY-REQUEST-ID", unique_id)
+            .body(json_data.to_string())
+            .send()
+            .await
+            .unwrap();
+    }
+
+    async fn transfer_funds_to_one_account(funds: Vec<Fund>) {
+        let time_start = Instant::now();
+        // transfer the funds to one account
+        for f in funds {
+            if f.uid == 100001 {
+                continue;
+            }
+            transfer_api(f.uid, 100001, f.amount)
+                .await
+                .map_err(|err| format!("Error transfering fund: {}", err.to_string()))
+                .unwrap();
+        }
+        println!("Transfer time: {}ms", time_start.elapsed().as_millis());
+    }
+
+    async fn transfer_api(from: i64, to: i64, amount: f64) -> anyhow::Result<()> {
+        let data = UserTradeJson {
+            source_uid: from,
+            target_uid: to,
+            amount,
+        };
+        let json_data = json!(data);
+        let unique_id = Uuid::new_v4().to_string();
+        let response = Client::new()
+            .post("http://127.0.0.1:20004/onePass/userTrade")
+            .header("Content-Type", "application/json")
+            .header("X-KSY-REQUEST-ID", unique_id)
+            .body(json_data.to_string())
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        println!("Response status code: {status}");
+        println!("REsponse body: {body}");
+        Ok(())
     }
 }
