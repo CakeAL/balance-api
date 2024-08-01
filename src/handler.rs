@@ -158,17 +158,18 @@ pub async fn batch_pay_finish(req_uuid: String, request_id: String) -> i32 {
     match response {
         Ok(response) => {
             let status_code = response.status();
-            match response.text().await {
-                Ok(body) => {
-                    println!("Response status code: {}", status_code);
-                    println!("Response body: {}", body);
-                    return status_code.as_u16() as i32;
-                }
-                Err(err) => {
-                    tracing::error!("Error reading response body: {}", err);
-                    return 0;
-                }
-            }
+            // match response.text().await {
+            //     Ok(body) => {
+            //         println!("Response status code: {}", status_code);
+            //         println!("Response body: {}", body);
+            //         return status_code.as_u16() as i32;
+            //     }
+            //     Err(err) => {
+            //         tracing::error!("Error reading response body: {}", err);
+            //         return 0;
+            //     }
+            // }
+            return status_code.as_u16() as i32;
         }
         Err(err) => {
             tracing::error!("Error sending requesst: {}", err.to_string());
@@ -212,7 +213,7 @@ async fn pay_funds(uids: Vec<i64>) {
             if let Ok(amount) = amount {
                 let start = Instant::now();
                 db::api::add_money(uid, amount);
-                println!(
+                tracing::info!(
                     "uid: {}, add money: {}, use time: {}ms",
                     uid,
                     amount,
@@ -231,11 +232,11 @@ async fn pay_funds(uids: Vec<i64>) {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
+    use std::{fs::File, time::Duration};
 
     use reqwest::Client;
     use serde_json::json;
-    use tokio::time::Instant;
+    use tokio::time::{self, Instant};
     use uuid::Uuid;
 
     use crate::fund::{init_funds, Fund};
@@ -305,12 +306,17 @@ mod tests {
         init_funds(funds.clone()).await.unwrap();
         // pay all funds
         let mut uids = vec![];
-        for f in funds {
+        for f in funds.clone() {
             uids.push(f.uid);
         }
+        time::sleep(Duration::from_secs(10)).await;
         pay_funds_api(uids).await;
+        // transfer the funds
+        transfer_funds_to_one_account(funds).await;
+        // get_fund_account(vec![100001]).await;
     }
 
+    #[allow(dead_code)]
     async fn get_fund_account(uids: Vec<i64>) {
         let unique_id = Uuid::new_v4().to_string();
         let json_data = json!(uids);

@@ -16,6 +16,12 @@ struct GetFundJson {
     amount: f64,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub struct Fund {
+    pub uid: i64,
+    pub amount: f64,
+}
+
 #[derive(Deserialize)]
 struct GetFundResponse {
     code: i32,
@@ -65,12 +71,6 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
     Ok(result.code)
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-pub struct Fund {
-    pub uid: i64,
-    pub amount: f64,
-}
-
 pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
     let json_data = json!(list);
     let response = Client::new()
@@ -86,8 +86,8 @@ pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
     let body = response.text().await?;
 
     // 打印响应体
-    println!("Response status code: {}", status);
-    println!("Response body: {}", body);
+    tracing::info!("Response status code: {}", status);
+    tracing::info!("Response body: {}", body);
     Ok(())
 }
 
@@ -120,9 +120,6 @@ pub async fn get_all_fund(uid: i64) -> Result<i64> {
                     }
                     404 => {
                         return Err(anyhow!("not found account by uid: {}", uid));
-                    }
-                    500001 => {
-                        return Err(anyhow!("get fund error, uid: {}, amount: {}", uid, pre));
                     }
                     _ => continue,
                 },
