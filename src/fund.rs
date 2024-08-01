@@ -1,9 +1,10 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::GLOBAL_CONFIG;
@@ -33,6 +34,7 @@ struct GetFundResponse {
 
 // 不保证正确
 pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
+    tracing::info!("GETPAY uid: {uid}, amount: {amount}, uniqueID: {unique_id}");
     let data = GetFundJson {
         transaction_id: unique_id,
         uid,
@@ -92,43 +94,62 @@ pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
 }
 
 pub async fn get_all_fund(uid: i64) -> Result<i64> {
-    let config = &*GLOBAL_CONFIG;
-    let timeout = Duration::from_millis(config.server.request_timeout as u64);
-
     let (mut pre, mut ans) = (500000i64, 0i64);
-    let mut unique_id = Uuid::new_v4().to_string();
+    println!("before get all one amount");
+    ans += get_all_one_amount(uid, 1000000, 100).await;
     while pre >= 1 {
-        match tokio::time::timeout(timeout, get_pay(uid, pre, unique_id.clone())).await {
-            Ok(res) => match res {
-                Err(e) => {
-                    if e.to_string().contains("Request failed with status code:") {
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
-                }
-                Ok(code) => match code {
-                    200 => {
-                        ans += pre;
-                        unique_id = Uuid::new_v4().to_string();
-                        continue;
-                    }
-                    501 => {
-                        pre /= 2;
-                        unique_id = Uuid::new_v4().to_string();
-                        continue;
-                    }
-                    404 => {
-                        return Err(anyhow!("not found account by uid: {}", uid));
-                    }
-                    _ => continue,
-                },
-            },
-            Err(_) => continue, // timeout
-        }
+        ans += get_all_one_amount(uid, pre, 2).await;
+        pre /= 2;
     }
 
     Ok(ans)
+}
+
+async fn get_all_one_amount(uid: i64, amount: i64, max_parallel: usize) -> i64 {
+    let ans = Arc::new(RwLock::new(0i64));
+    let mut handles = Vec::new();
+    for _ in 0..max_parallel {
+        let ans = ans.clone();
+        let handler = tokio::spawn(async move {
+            let signal_get = singal_get_pay(uid, amount).await;
+            println!("signal_get: {signal_get}");
+            *ans.write().await += signal_get;
+        });
+        handles.push(handler);
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    *ans.to_owned().read().await
+}
+
+async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
+    let mut ans = 0i64;
+    let mut unique_id = Uuid::new_v4().to_string();
+    let config = &*GLOBAL_CONFIG;
+    let timeout = Duration::from_millis(config.server.request_timeout as u64);
+    loop {
+        match tokio::time::timeout(timeout, get_pay(uid, amount, unique_id.clone())).await {
+            Ok(res) => match res {
+                Err(_) => {}
+                Ok(code) => match code {
+                    200 => {
+                        ans += amount;
+                        unique_id = Uuid::new_v4().to_string();
+                        continue;
+                    }
+                    501 => return ans,
+                    404 => return 0,
+                    _ => continue,
+                },
+            },
+            Err(_) => {
+                println!("timeout");
+                continue;
+            }
+        }
+    }
+    0
 }
 
 #[cfg(test)]

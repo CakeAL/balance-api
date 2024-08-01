@@ -50,6 +50,7 @@ struct UserTradeJson {
 }
 
 pub async fn batch_pay(header: HeaderMap, Json(body): Json<BatchPayJson>) -> impl IntoResponse {
+    // TODO: time start
     let batch_pay_id = body.batch_pay_id.to_owned();
     if !uuid_cache::check_and_add_batch_pay(batch_pay_id) {
         return (
@@ -180,6 +181,7 @@ pub async fn batch_pay_finish(req_uuid: String, request_id: String) -> i32 {
 
 async fn do_batch_pay(body: BatchPayJson) {
     pay_funds(body.uids).await;
+    // TODO: pay funds use time
     // call batch_pay_finish when all user finish
     let uuid: String = Uuid::new_v4().to_string();
     loop {
@@ -271,7 +273,7 @@ mod tests {
     async fn test_batch_pay_once() {
         let funds = vec![Fund {
             uid: 100001,
-            amount: 36.73,
+            amount: 100000000.53,
         }];
         init_funds(funds.clone()).await.unwrap();
         let mut uids = vec![];
