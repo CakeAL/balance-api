@@ -1,10 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::{atomic::{AtomicBool, AtomicI64, Ordering}, Arc}, time::Duration};
 
 use anyhow::{anyhow, Result};
+use awaitgroup::WaitGroup;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::{sync::Semaphore, time};
 use uuid::Uuid;
 
 use crate::GLOBAL_CONFIG;
@@ -43,7 +44,7 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
     let uuid = Uuid::new_v4().to_string();
     let json_data = serde_json::json!(data);
     let response = Client::new()
-        .post("http://example.com")
+        .post(&*GLOBAL_CONFIG.urls.get_pay)
         .header("Content-Type", "application/json")
         .header("X-KSY-REQUEST-ID", &uuid)
         .header("X-KSY-KINGSTAR-ID", "20004")
@@ -76,7 +77,7 @@ pub async fn get_pay(uid: i64, amount: i64, unique_id: String) -> Result<i32> {
 pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
     let json_data = json!(list);
     let response = Client::new()
-        .post("http://example.com")
+        .post(&*GLOBAL_CONFIG.urls.init_funds)
         .header("Content-Type", "application/json")
         .header("X-KSY-REQUEST-ID", "1")
         .header("X-KSY-KINGSTAR-ID", "20004")
@@ -88,8 +89,8 @@ pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
     let body = response.text().await?;
 
     // 打印响应体
-    tracing::info!("Response status code: {}", status);
-    tracing::info!("Response body: {}", body);
+    println!("Response status code: {}", status);
+    println!("Response body: {}", body);
     Ok(())
 }
 
@@ -106,21 +107,27 @@ pub async fn get_all_fund(uid: i64) -> Result<i64> {
 }
 
 async fn get_all_one_amount(uid: i64, amount: i64, max_parallel: usize) -> i64 {
-    let ans = Arc::new(RwLock::new(0i64));
-    let mut handles = Vec::new();
-    for _ in 0..max_parallel {
+    let ans = Arc::new(AtomicI64::new(0));
+    let is_done = Arc::new(AtomicBool::new(false));
+    let mut wg = WaitGroup::new();
+    for i in 1..=max_parallel {
+        if is_done.load(Ordering::Relaxed) { break; }
+        if max_parallel > 2 {
+            if i < 30 && i != 1 {
+                time::sleep(Duration::from_millis(10)).await;
+            }
+        }
         let ans = ans.clone();
-        let handler = tokio::spawn(async move {
-            let signal_get = singal_get_pay(uid, amount).await;
-            println!("signal_get: {signal_get}");
-            *ans.write().await += signal_get;
+        let is_done = is_done.clone();
+        let worker = wg.worker();
+        tokio::spawn(async move {
+            ans.fetch_add(singal_get_pay(uid, amount).await, Ordering::SeqCst);
+            is_done.store(true, Ordering::SeqCst);
+            worker.done();
         });
-        handles.push(handler);
     }
-    for handle in handles {
-        handle.await.unwrap();
-    }
-    *ans.to_owned().read().await
+    wg.wait().await;
+    ans.load(Ordering::Relaxed)
 }
 
 async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
@@ -191,7 +198,7 @@ mod tests {
         ];
         let res = init_funds(funds).await;
         dbg!(res.unwrap());
-        let res = get_all_fund(600002).await;
+        let res = get_all_fund(600004).await;
         dbg!(res.unwrap());
     }
 

@@ -1,20 +1,24 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
+use awaitgroup::WaitGroup;
 use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{task, time::Instant};
+use tokio::task;
 use uuid::Uuid;
 
 use crate::{
     db,
     fund::{get_all_fund, Fund},
-    uuid_cache,
+    uuid_cache, GLOBAL_CONFIG,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -49,29 +53,30 @@ struct UserTradeJson {
     amount: f64,
 }
 
-pub async fn batch_pay(header: HeaderMap, Json(body): Json<BatchPayJson>) -> impl IntoResponse {
-    // TODO: time start
+pub async fn batch_pay(
+    header: HeaderMap,
+    Json(body): Json<BatchPayJson>,
+) -> anyhow::Result<impl IntoResponse, (StatusCode, String)> {
+    let time_start = tokio::time::Instant::now();
     let batch_pay_id = body.batch_pay_id.to_owned();
     if !uuid_cache::check_and_add_batch_pay(batch_pay_id) {
-        return (
+        return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "batchPayId already exist"})),
-        )
-            .into_response();
+            json!({"error": "batchPayId already exist"}).to_string(),
+        ));
     }
 
     // 开一个异步任务
-    task::spawn(do_batch_pay(body));
+    task::spawn(do_batch_pay(body, time_start));
     let request_id = match header.get("X-KSY-REQUEST-ID") {
         Some(value) => value.to_str().unwrap().to_string(),
         None => "".to_string(),
     };
 
-    (
+    Ok((
         StatusCode::OK,
         Json(json!({"msg": "ok", "code": 200, "requestId": request_id})),
-    )
-        .into_response()
+    ))
 }
 
 pub async fn user_trade(header: HeaderMap, body_raw: String) -> impl IntoResponse {
@@ -150,7 +155,7 @@ pub async fn batch_pay_finish(req_uuid: String, request_id: String) -> i32 {
     let json_data = json!(data);
 
     let response = Client::new()
-        .post("http://example.com")
+        .post(&*GLOBAL_CONFIG.urls.batch_pay_finish)
         .body(json_data.to_string())
         .header("X-KSY-REQUEST-ID", req_uuid.clone())
         .header("X-KSY-KINGSTAR-ID", "20004")
@@ -179,9 +184,9 @@ pub async fn batch_pay_finish(req_uuid: String, request_id: String) -> i32 {
     }
 }
 
-async fn do_batch_pay(body: BatchPayJson) {
+async fn do_batch_pay(body: BatchPayJson, time_start: tokio::time::Instant) {
     pay_funds(body.uids).await;
-    // TODO: pay funds use time
+    tracing::info!("pay_funds use time: {}", time_start.elapsed().as_secs_f64());
     // call batch_pay_finish when all user finish
     let uuid: String = Uuid::new_v4().to_string();
     loop {
@@ -193,7 +198,7 @@ async fn do_batch_pay(body: BatchPayJson) {
         {
             Ok(code) => {
                 if code == 200 {
-                    // print time cost
+                    tracing::info!("use time: {}", time_start.elapsed().as_secs_f64());
                     return;
                 } else {
                     continue;
@@ -208,37 +213,36 @@ async fn do_batch_pay(body: BatchPayJson) {
 }
 
 async fn pay_funds(uids: Vec<i64>) {
-    let mut handlers = vec![];
+    let mut wg = WaitGroup::new();
     for uid in uids {
-        let handle = tokio::spawn(async move {
+        let worker = wg.worker();
+        tokio::spawn(async move {
             let amount = get_all_fund(uid).await;
             if let Ok(amount) = amount {
-                let start = Instant::now();
+                // let start = Instant::now();
                 db::api::add_money(uid, amount);
-                tracing::info!(
-                    "uid: {}, add money: {}, use time: {}ms",
-                    uid,
-                    amount,
-                    start.elapsed().as_millis()
-                )
+                // tracing::info!(
+                //     "uid: {}, add money: {}, use time: {}ms",
+                //     uid,
+                //     amount,
+                //     start.elapsed().as_millis()
+                // )
             }
+            worker.done();
         });
-        handlers.push(handle);
     }
 
-    for handle in handlers {
-        handle.await.unwrap(); // 等待全部完成
-    }
+    wg.wait().await;
     // println!("{:?}", db::api::get_all_balance());
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, time::Duration};
+    use std::fs::File;
 
     use reqwest::Client;
     use serde_json::json;
-    use tokio::time::{self, Instant};
+    use tokio::time::Instant;
     use uuid::Uuid;
 
     use crate::fund::{init_funds, Fund};
@@ -273,7 +277,7 @@ mod tests {
     async fn test_batch_pay_once() {
         let funds = vec![Fund {
             uid: 100001,
-            amount: 100000000.53,
+            amount: 1001.53,
         }];
         init_funds(funds.clone()).await.unwrap();
         let mut uids = vec![];
@@ -309,7 +313,7 @@ mod tests {
                 eprintln!("Error reading file: {}", err);
                 return;
             }
-        }; 
+        };
         init_funds(funds.clone()).await.unwrap();
         // pay all funds
         let mut uids = vec![];
@@ -336,8 +340,8 @@ mod tests {
         }
         pay_funds_api(uids).await;
         // transfer the funds
-        time::sleep(Duration::from_secs(10)).await;
-        transfer_funds_to_one_account(funds).await;
+        // time::sleep(Duration::from_secs(10)).await;
+        // transfer_funds_to_one_account(funds).await;
         // get_fund_account(vec![100001]).await;
     }
 

@@ -2,3 +2,7 @@ server:
   addr: 127.0.0.1
   port: 20004
   request_timeout: 800
+urls:
+  get_pay: 
+  init_funds: 
+  batch_pay_finish: 
