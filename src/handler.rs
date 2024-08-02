@@ -77,7 +77,6 @@ pub async fn batch_pay(
 }
 
 pub async fn user_trade(header: HeaderMap, body_raw: String) -> impl IntoResponse {
-    // TODO: make sure each request_id will only do once
     let request_id = match header.get("X-KSY-REQUEST-ID") {
         Some(value) => value.to_str().unwrap().to_string(),
         None => "".to_string(),

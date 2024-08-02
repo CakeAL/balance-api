@@ -129,7 +129,7 @@ pub async fn init_funds(list: Vec<Fund>) -> Result<()> {
 pub async fn get_all_fund(uid: i64) -> Result<i64> {
     let (mut pre, mut ans) = (500000i64, 0i64);
     println!("before get all one amount");
-    ans += get_all_one_amount(uid, 1000000, 500).await;
+    ans += get_all_one_amount(uid, 1000000, 30).await;
     while pre >= 1 {
         ans += get_all_one_amount(uid, pre, 2).await;
         pre /= 2;
@@ -140,7 +140,7 @@ pub async fn get_all_fund(uid: i64) -> Result<i64> {
 
 async fn get_all_one_amount(uid: i64, amount: i64, max_parallel: usize) -> i64 {
     let ans = Arc::new(Mutex::new(0));
-    let (tx_done, mut rx_done) = mpsc::channel(100);
+    let (tx_done, mut rx_done) = mpsc::channel(500);
     let mut wg = WaitGroup::new();
     for i in 1..=max_parallel {
         if let Ok(_) = rx_done.try_recv() {
@@ -172,11 +172,11 @@ async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
 
     loop {
         // 超时/或其他原因重试
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel(100);
         let tx_clone = tx.clone();
         let unique_id_1 = unique_id.clone();
         task::spawn(get_pay(uid, amount, unique_id_1, tx_clone));
-        let timeout = time::sleep(timeout);
+
         tokio::select! {
             Some(code) = rx.recv() => {
                 match code {
@@ -190,7 +190,8 @@ async fn singal_get_pay(uid: i64, amount: i64) -> i64 {
                     _ => continue,
                 }
             },
-            _ = timeout => {
+            _ = time::sleep(timeout) => {
+                // println!("Timeout!");
                 if let Some(_) = rx.recv().await {}
                 continue;
             }
